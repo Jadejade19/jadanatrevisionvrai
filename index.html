@@ -148,6 +148,7 @@ const imgTags = keys => (keys || []).filter(k => D.imgs && D.imgs[k]).map(k => `
 const webImg = f => !f || !f.web || !D.imgs[f.web[0]] ? "" : `<figure class="web"><div class="pics">${imgTags([f.web[0]])}</div><figcaption class="small">${f.web[1] ? "Planche d'ensemble de la région ou de l'os : la structure n'y est pas toujours légendée. " : ""}Image ajoutée (hors cours) · Wikimedia Commons : <a href="https://commons.wikimedia.org/wiki/File:${encodeURIComponent((D.imgCap[f.web[0]] || "").split(" – ")[0])}" target="_blank" rel="noopener">${esc(D.imgCap[f.web[0]] || "")}</a></figcaption></figure>`;
 function hydrateImgs() {
   document.querySelectorAll("img.pic[data-k]:not([src])").forEach(el => {
+    if (el.closest("details:not([open])")) return; // chargée seulement quand on ouvre le volet
     const k = el.dataset.k, p = D.imgs[k];
     if (!p) return;
     loadPack(p).then(() => { if (window.IMGP && IMGP[k]) el.src = IMGP[k]; }).catch(() => { el.alt = navigator.onLine ? "Image absente du site : fichier " + p + ".js introuvable sur GitHub" : "Image indisponible hors ligne (jamais affichée)"; });
@@ -164,6 +165,45 @@ let FLAGS = load(K_FLAG, {});      // id -> date
 const K_OVR = "revanat-corrections-v1"; let OVR = load(K_OVR, {}); // corrections manuelles
 const applyOvr = () => { for (const id in OVR) { const q = BY_ID[id]; if (q) { q.q = OVR[id].q; q.a = OVR[id].a; if (q.m) { q.m = q.a.split(" ; "); q.d = q.d.filter(x => !q.m.includes(x)); } else q.d = q.d.filter(x => x !== q.a); } } };
 applyOvr();
+// ======================== Widget Android (appli « Widget Révisions anat ») ========================
+const K_WLAST = "revanat-widget-last-v1"; // date de la dernière réponse du widget déjà importée
+function qsHash() { // empreinte de la liste des questions, identique côté widget
+  let h = 0x811c9dc5;
+  for (let i = 0; i < QS.length; i++) { const s = (i ? "\n" : "") + QS[i].id; for (let j = 0; j < s.length; j++) { h ^= s.charCodeAt(j); h = Math.imul(h, 0x01000193) >>> 0; } }
+  return h >>> 0;
+}
+function widgetLink() { // lien qui ouvre le widget et lui donne les QCM déjà faits ici
+  const bytes = new Uint8Array(Math.ceil(QS.length / 8));
+  QS.forEach((q, i) => { if (PROG[q.id]) bytes[i >> 3] |= 1 << (i & 7); });
+  let bin = ""; bytes.forEach(b => { bin += String.fromCharCode(b); });
+  const d = btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const back = location.href.split("#")[0] + "#/widget";
+  return `intent://sync?h=${qsHash()}&w=${load(K_WLAST, 0)}&d=${d}#Intent;scheme=revanat;package=fr.jadanat.revwidget;S.browser_fallback_url=${encodeURIComponent(back)};end`;
+}
+function importWidget(payload) { // réponses envoyées par le widget (#/sync/<base64>)
+  if (!payload) return "";
+  let data;
+  try { data = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(payload.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)))); }
+  catch { return "Lien du widget illisible."; }
+  const last = load(K_WLAST, 0); let max = last, n = 0, ok = 0;
+  for (const [id, r, t] of (data.r || [])) {
+    if (!BY_ID[id] || !(t > last)) continue;
+    const p = PROG[id] || { n: 0, ok: 0 };
+    p.n++; if (r) p.ok++;
+    if (!(p.t > t)) { p.r = r ? 1 : 0; p.t = t; }
+    PROG[id] = p; n++; if (r) ok++; if (t > max) max = t;
+  }
+  save(K_PROG, PROG); save(K_WLAST, max);
+  return n ? `✔ ${plural(n, "réponse")} du widget ${n > 1 ? "enregistrées" : "enregistrée"} : ${ok} dans « Déjà eu bon », ${n - ok} dans « Échecs ».` : "Ces réponses du widget étaient déjà enregistrées.";
+}
+const widgetBtn = () => `<a class="btn primary" href="${esc(widgetLink())}">📲 Mettre à jour le widget</a>`;
+function viewWidget() {
+  const msg = MSG; MSG = "";
+  return `<section class="card"><h2>📲 Widget Android</h2>
+      ${msg ? `<p class="big">${esc(msg)}</p>` : ""}
+      <p class="small">Touche « Mettre à jour le widget » : il saura quels QCM tu as déjà faits ici et ne te proposera que des structures pas encore interrogées.</p>
+      <div class="actions">${widgetBtn()}<a class="btn" href="#/g">Accueil</a></div></section>`;
+}
 let SESSION = null;
 let MSG = "";
 
@@ -251,7 +291,8 @@ function viewQuiz() {
       <p class="big">${S.ok} / ${tot} bonnes réponses${tot ? ` (${Math.round(S.ok / tot * 100)} %)` : ""}</p>
       ${tot ? progressBlock({ ok: S.ok, ko: S.ko, todo: 0, total: tot }) : ""}
       <div class="actions"><a class="btn primary" href="#/${S.tab || "g"}">Retour à l'onglet</a>
-      ${S.ko ? `<button data-act="redoKo">Refaire mes erreurs de cette série (${S.ko})</button>` : ""}</div></section>`;
+      ${S.ko ? `<button data-act="redoKo">Refaire mes erreurs de cette série (${S.ko})</button>` : ""}</div>
+      <div class="actions">${widgetBtn().replace("btn primary", "btn")}</div></section>`;
   }
   const q = BY_ID[S.ids[S.pos]];
   if (!S.opts) {
@@ -281,7 +322,8 @@ function viewQuiz() {
       ${q.m && q.m.length > S.opts.filter(o => q.m.includes(o)).length ? `<div class="expl"><b>Liste complète du cours :</b> ${esc(q.a)}</div>` : ""}
       ${q.x ? `<div class="expl">${esc(q.x)}</div>` : ""}
       <div class="small" style="margin-top:8px">📄 Source : ${esc(srcText(q.src))}</div>
-      ${f ? `<details><summary>Fiche complète : ${esc(cap(q.s))}</summary>${trajets(q.s)}${ficheList(f)}</details>` : ""}
+      ${f ? `<details><summary>Fiche complète : ${esc(cap(q.s))}</summary>${trajets(q.s)}${ficheList(f)}${palpaBlocks(f)}
+        ${f.imgs && f.imgs.length ? `<details><summary>📑 Photos du cours (${f.imgs.length})</summary><div class="pics big">${imgTags(f.imgs)}</div></details>` : ""}</details>` : ""}
       <div class="actions">
         <button class="primary" data-act="next" id="nextBtn">${S.pos + 1 < S.ids.length ? "Question suivante →" : "Voir le bilan"}</button>
         <button class="flag ${FLAGS[q.id] ? "on" : ""}" data-act="flag">${FLAGS[q.id] ? "🚩 Signalée" : "🚩 Signaler une erreur"}</button>
@@ -445,6 +487,9 @@ function viewSettings() {
       <div class="actions"><button class="primary" data-act="export">Exporter ma progression</button><button data-act="import">Importer</button>
       <input type="file" id="importFile" accept="application/json,.json" class="hidden"></div>
       <div class="msg">${esc(msg)}</div></section>
+    <section class="card"><h2>📲 Widget Android</h2>
+      <p class="small">Les réponses données sur le widget arrivent ici quand tu touches « ↻ Envoyer à l'appli » sur le widget. Dans l'autre sens, ce bouton envoie ta progression au widget.</p>
+      <div class="actions">${widgetBtn()}</div></section>
     <section class="card"><h2>Questions signalées (${nf})</h2>
       <p class="small">Si une question te paraît fausse, touche « 🚩 Signaler une erreur » après y avoir répondu. Tu retrouves la liste ici pour la faire corriger.</p>
       ${nf ? `<div class="list">${Object.keys(FLAGS).map(id => BY_ID[id]).filter(Boolean).map(q => `<a href="#/fiche/${encodeURIComponent(q.s)}"><span>${esc(q.q)}</span><span class="small">${esc(q.s)}</span></a><button class="flag" data-act="fixQ" data-id="${q.id}">✏ Corriger la question ou la réponse</button>`).join("")}</div>
@@ -493,6 +538,8 @@ function render() {
     else if (p0 === "rev") { tab = p1 || "g"; title = "Révision"; html = viewRev(p1 || "g", route()[2] || ""); }
     else if (p0 === "vert") { title = "Vertèbre " + p1; html = viewVert(p1); }
     else if (p0 === "nx") { const r = route(); title = "Nerf"; html = viewNx(p1, r[2], r[3]); }
+    else if (p0 === "sync") { MSG = importWidget(p1 || ""); history.replaceState(null, "", "#/widget"); title = "Widget"; html = viewWidget(); }
+    else if (p0 === "widget") { title = "Widget"; html = viewWidget(); }
     else if (p0 === "reglages") { title = "Réglages"; html = viewSettings(); }
     else { tab = "g"; html = viewTab("g"); }
   } catch (e) { html = `<div class="card">Erreur : ${esc(e.message)}</div>`; }
@@ -616,6 +663,7 @@ document.addEventListener("keydown", e => {
   else if ((e.key === "Enter" || e.key === " ") && SESSION.answered != null) { e.preventDefault(); ACT.next(); }
 });
 window.addEventListener("hashchange", render);
+document.addEventListener("toggle", e => { if (e.target.open) hydrateImgs(); }, true);
 render();
 try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch {}
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
